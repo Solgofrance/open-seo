@@ -1,0 +1,106 @@
+# Solgo : mise en ligne d'OpenSEO sur le compte Cloudflare de Solgo (ajouté le 14/10/2026).
+#
+# Ne se lance que dans deux cas :
+#   1. quand le fichier .solgo/deployer.txt change sur la branche solgo-deploiement ;
+#   2. à la main, depuis l'onglet Actions (« Run workflow »).
+# Rien ne part sur Cloudflare autrement.
+#
+# Secrets du dépôt nécessaires (Settings > Secrets and variables > Actions) :
+#   CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, DATAFORSEO_API_KEY
+#
+# Même commande que le guide officiel (docs/SELF_HOSTING_CLOUDFLARE.md) :
+# pnpm deploy:selfhost --yes, avec la clé Cloudflare au lieu de « alchemy login ».
+# Accès réservé à contact@solgo.fr par Cloudflare Access (code reçu par e-mail).
+
+name: Solgo - mise en ligne OpenSEO
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - solgo-deploiement
+    paths:
+      - ".solgo/deployer.txt"
+
+concurrency:
+  group: solgo-deploiement
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    if: github.repository == 'Solgofrance/open-seo'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      APP_URL: https://open-seo-selfhost.j-jourdain94.workers.dev
+
+    steps:
+      - name: Vérifier que les 3 secrets sont posés
+        env:
+          DATAFORSEO_API_KEY: ${{ secrets.DATAFORSEO_API_KEY }}
+        run: |
+          missing=""
+          [ -n "$CLOUDFLARE_API_TOKEN" ] || missing="$missing CLOUDFLARE_API_TOKEN"
+          [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || missing="$missing CLOUDFLARE_ACCOUNT_ID"
+          [ -n "$DATAFORSEO_API_KEY" ] || missing="$missing DATAFORSEO_API_KEY"
+          if [ -n "$missing" ]; then
+            echo "::error::Secrets manquants :$missing"
+            exit 1
+          fi
+
+      - name: Récupérer le code
+        uses: actions/checkout@v4
+
+      - name: Installer pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Installer Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Installer les dépendances
+        run: pnpm install --frozen-lockfile
+
+      - name: Écrire .env.selfhost (jamais enregistré dans le dépôt)
+        env:
+          DATAFORSEO_API_KEY: ${{ secrets.DATAFORSEO_API_KEY }}
+        run: |
+          umask 077
+          {
+            printf 'DATAFORSEO_API_KEY=%s\n' "$DATAFORSEO_API_KEY"
+            printf 'ACCESS_ALLOWED_EMAILS=%s\n' "contact@solgo.fr"
+            printf 'OPENSEO_TELEMETRY_DISABLED=1\n'
+          } > .env.selfhost
+
+      - name: Mettre en ligne sur Cloudflare
+        run: pnpm deploy:selfhost --yes
+
+      # Même contrôle que le projet fait sur ses propres versions d'essai :
+      # la page doit renvoyer vers la connexion Cloudflare Access, jamais s'ouvrir sans code.
+      - name: Vérifier que l'accès est protégé
+        run: |
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            response=$(curl -sS -o /dev/null -m 10 -w '%{http_code} %{redirect_url}' "$APP_URL") || response=""
+            code="${response%% *}"
+            location="${response#* }"
+            case "$location" in
+              https://*.cloudflareaccess.com/cdn-cgi/access/login*)
+                echo "Protégé : $APP_URL renvoie vers la connexion Cloudflare Access."
+                exit 0 ;;
+            esac
+            if [ -n "$code" ] && [ "$code" -ge 200 ] && [ "$code" -lt 500 ] && [ "$code" != 404 ]; then
+              echo "::error::$APP_URL répond (HTTP $code) SANS connexion Cloudflare Access : la page est publique."
+              exit 1
+            fi
+            echo "essai $attempt : pas encore en ligne (${response:-pas de réponse})"
+            sleep 6
+          done
+          echo "::error::Protection non vérifiée pour $APP_URL après 10 essais (adresse différente ou mise en ligne lente) : vérifier à la main."
+          exit 1
