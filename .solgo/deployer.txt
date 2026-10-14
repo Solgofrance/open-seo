@@ -1,0 +1,5 @@
+Fichier de déclenchement de la mise en ligne d'OpenSEO sur Cloudflare.
+Le modifier sur la branche solgo-deploiement relance la mise en ligne
+(workflow .github/workflows/solgo-deploiement.yml). Ne le modifier qu'avec l'accord de James.
+
+Mise en ligne n°1 : 14/10/2026 02:09 (heure de Paris), accord « go mise en ligne OpenSEO ».
